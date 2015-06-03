@@ -1,0 +1,9 @@
+
+CMake*
+Makefile
+buildings
+*~
+
+*.xml
+*.json
+*.cc
