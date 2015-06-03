@@ -6,11 +6,12 @@ import xml.etree.ElementTree as ET
 import pyproj;
 
 #proj = pyproj.Proj("+proj=utm +zone=33 +ellps=GRS80 +units=m +no_defs");
+proj = pyproj.Proj(init="epsg:25833");
 
 def getGeometry(bldg):
-    proj = pyproj.Proj(init="epsg:25833");
+    global proj;
     textures = {};
-
+    
     for i in bldg.iter("appearance"):
         appr = i.find("Appearance");
         theme = appr.find("theme").text;
@@ -44,7 +45,6 @@ def getGeometry(bldg):
         assert( i.find("interior") == None);
         assert( len(i.findall("exterior")) == 1)
         ext = i.find("exterior");
-        #print("#exts:", 
         assert(len(ext.findall("LinearRing")) == 1);
         ring = ext.find("LinearRing");
         pl = ring.find("posList").text;
@@ -59,7 +59,6 @@ def getGeometry(bldg):
             #print(latlng);
             pl[j*3] = latlng[1];
             pl[j*3+1]=latlng[0];
-            #exit(0);
 
 
         pid = i.attrib["id"]
@@ -80,9 +79,13 @@ def getGeometry(bldg):
     return polys;
 
 
-for i in range(1000)[2:]:
+for i in range(19464)[2:]:
     filename = 'buildings/bldg'+str(i);
-    print("reading file", filename+".xml");
+    #print("reading file", filename+".xml");
+
+    if i % 1000 == 0:
+        print( str(int(i/1000))+ "k buildings converted");
+
     f = open(filename+".xml", 'rb')
     s = str(f.read(), "utf-8")
     f.close()
@@ -92,18 +95,19 @@ for i in range(1000)[2:]:
     s = re.sub("</\w*:", "</", s);
     s = s.replace("gml:id", "id");
     s = s.replace("xlink:href", "href");
-    #removing trailing tags
-    s = s.replace("</cityObjectMember>", "");
-    s = s.replace("<cityObjectMember>", "");
     
-    fOut = open("tmp.xml", "wb");
-    fOut.write( bytes(s, "utf-8"));
-    fOut.close();
+    #fOut = open("tmp.xml", "wb");
+    #fOut.write( bytes(s, "utf-8"));
+    #fOut.close();
     #print(s);
-    bldg = ET.fromstring(s)
+    
+    bldg = ET.fromstring(s).find("Building");
 
-    geo = getGeometry(bldg);
-    #print (geo);
+    try:
+        geo = getGeometry(bldg);
+    except:
+        print("building", i, "too complex, skipping");
+        continue;
 
     asJson = json.dumps(geo, sort_keys=True, indent=4, separators=(',', ': '));
     
@@ -111,7 +115,4 @@ for i in range(1000)[2:]:
     fOut.write( bytes(asJson, "utf-8"));
     fOut.close();
 
-    #print( asJson )
-    #print(len(asJson) );
-#for appearance in bldg.findall("appearance"):
-#    print("#");
+
