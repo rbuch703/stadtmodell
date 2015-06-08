@@ -8,39 +8,96 @@ import pyproj;
 #proj = pyproj.Proj("+proj=utm +zone=33 +ellps=GRS80 +units=m +no_defs");
 proj = pyproj.Proj(init="epsg:25833");
 
-def getGeometry(bldg):
-    global proj;
-    textures = {};
-    
+def parseTextures(bldg, filename):
+    textures = [];
+    sdmRefs = [];
     for i in bldg.iter("appearance"):
+        assert( len(i.findall("Appearance")) == 1)
         appr = i.find("Appearance");
         theme = appr.find("theme").text;
-        #if (theme != "rgbTexture"):
-        #    continue;
-        
+
+        #print("Appearance");
         for sdm in appr.iter("surfaceDataMember"):
-            tex = sdm.find("ParameterizedTexture");
-            if not tex:
-    #            exit(0);
+            #print("\tsdm");
+            if not len(sdm): #the surfaceDataMember has no children --> is just a reference
+                assert("href" in sdm.attrib);
+                href = sdm.attrib["href"];
+                assert( href[0] == "#");
+
+                if theme == "rgbTexture":
+                    sdmRefs.append( href[1:]);
+                #print("empty sdm", sdm, sdm.attrib);
                 continue;
-            texId = tex.attrib["id"];
-            uri = tex.find("imageURI").text
-            target = tex.find("target")
-            targetUri = target.attrib["uri"]
-            assert(targetUri[0] == "#")
-            targetUri = targetUri[1:]
             
-            tcs = target.find("TexCoordList").findall("textureCoordinates");
-            assert(len(tcs) == 1)
-            tc = tcs[0];
-            texCoords = [float(x) for x in tc.text.split(" ")];
-            #print(uri, targetUri);
-            textures[targetUri] = {"uri":uri, "coords":texCoords};
+            # the surfaceDataMember has children: either a texture or a material
+            assert(len(sdm.attrib) == 0)
+            assert(len(sdm) == 1);
+            child = sdm[0];
+            assert(child.tag in ("ParameterizedTexture", "X3DMaterial"));
+            
+            if child.tag == "X3DMaterial":
+                if theme == "rgbTexture":
+                    print("[warn] untextured surface in textured model", filename);
+                continue;
+            
+            assert( child.tag == "ParameterizedTexture");
+            texNode = child;
+            
+            texId = texNode.attrib["id"];
+            if theme == "rgbTexture":
+                sdmRefs.append(texId);
+            
+            uri = texNode.find("imageURI").text
 
+            tex = { "id": texId, "imageUri": uri, "targets":[]}
+
+            for target in texNode.findall("target"):
+                targetUri = target.attrib["uri"]
+                assert(targetUri[0] == "#")
+                targetUri = targetUri[1:]
+                
+                targetNode = {"ref": targetUri, "texCoords":[]}
+                #print("\t\tsdm2")    
+                assert( len(target) == 1)
+                for texCoords in target[0].findall("textureCoordinates"):
+                    assert( "ring" in texCoords.attrib);
+                    targetId = texCoords.attrib["ring"];
+                    tcs = [float(x) for x in texCoords.text.split(" ")];
+                    assert( len(tcs) % 2 == 0);
+                    targetNode["texCoords"].append( {"subRef": targetId, "texCoords": tcs} );
+                    
+                tex["targets"].append(targetNode);
+            
+            textures.append(tex);
+            #assert(len(tcs) == 1)
+            #tc = tcs[0];
+            ##print(uri, targetUri);
+            #textures[targetUri] = {"uri":uri, "coords":texCoords};
+    sdmRefs = set(sdmRefs);
+    #print("refs:")#, sdmRefs);
+    #for ref in sdmRefs:
+    #    print("\t", ref);
+    #print("textures:")#, textures);
+    #for tex in textures:
+    #    print("\t", tex["id"]);
+    #print("len before:", len(textures));
+    textures = [ tex for tex in textures if tex["id"] in sdmRefs];   
+    return textures;
+    #print("len after:", len(textures));
+    #exit(0);
     #print (textures)
+    #print(sdmRefs);
 
+
+def getGeometry(bldg, filename):
+    global proj;
+    textures = {};
+    #sdms = [];
+    
     polys = [];
-
+    return textures, [];
+    
+    
     for i in bldg.iter("Polygon"):
         assert( i.find("interior") == None);
         assert( len(i.findall("exterior")) == 1)
@@ -76,10 +133,11 @@ def getGeometry(bldg):
             poly["texCoords"] = tex["coords"]
         
         polys.append(poly);
-    return polys;
+    return textures, polys;
 
 
-for i in range(19464)[2:]:
+for i in range(1,19463):
+#for i in [9225,]:
     filename = 'buildings/bldg'+str(i);
     #print("reading file", filename+".xml");
 
@@ -90,12 +148,7 @@ for i in range(19464)[2:]:
     s = str(f.read(), "utf-8")
     f.close()
 
-    #remove namespaces for easier parsing
-    s = re.sub("<\w*:", "<", s);
-    s = re.sub("</\w*:", "</", s);
-    s = s.replace("gml:id", "id");
-    s = s.replace("xlink:href", "href");
-    
+   
     #fOut = open("tmp.xml", "wb");
     #fOut.write( bytes(s, "utf-8"));
     #fOut.close();
@@ -104,15 +157,19 @@ for i in range(19464)[2:]:
     bldg = ET.fromstring(s).find("Building");
 
     try:
-        geo = getGeometry(bldg);
-    except:
-        print("building", i, "too complex, skipping");
-        continue;
+        textures = parseTextures(bldg, filename);
+#        textures, geo = getGeometry(bldg, filename);
+    except Exception as e:
+        print("in file", filename, e)
+#        print( e);
+        raise;
+    #    print("building", i, "too complex, skipping");
+    #    continue;
 
-    asJson = json.dumps(geo, sort_keys=True, indent=4, separators=(',', ': '));
-    
-    fOut = open(filename+".json", "wb");
-    fOut.write( bytes(asJson, "utf-8"));
-    fOut.close();
+    #print(textures)
+    #asJson = json.dumps(textures, sort_keys=True, indent=4, separators=(',', ': '));
+    #fOut = open("tmp.json", "wb");
+    #fOut.write( bytes(asJson, "utf-8"));
+    #fOut.close();
 
 
