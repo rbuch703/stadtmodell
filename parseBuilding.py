@@ -37,7 +37,7 @@ def parseTextures(bldg, filename):
             
             if child.tag == "X3DMaterial":
                 if theme == "rgbTexture":
-                    print("[warn] untextured surface in textured model", filename);
+                    print("[warn] untextured surface in textured model in building", filename);
                 continue;
             
             assert( child.tag == "ParameterizedTexture");
@@ -56,15 +56,20 @@ def parseTextures(bldg, filename):
                 assert(targetUri[0] == "#")
                 targetUri = targetUri[1:]
                 
-                targetNode = {"ref": targetUri, "texCoords":[]}
+                targetNode = {"ref": targetUri, "subTargets":[]}
                 #print("\t\tsdm2")    
                 assert( len(target) == 1)
                 for texCoords in target[0].findall("textureCoordinates"):
                     assert( "ring" in texCoords.attrib);
                     targetId = texCoords.attrib["ring"];
+                    assert(targetId[0] == "#")
                     tcs = [float(x) for x in texCoords.text.split(" ")];
+                    tcTuples = [];
                     assert( len(tcs) % 2 == 0);
-                    targetNode["texCoords"].append( {"subRef": targetId, "texCoords": tcs} );
+                    for j in range( int(len(tcs)/2)):
+                        tcTuples.append( (tcs[2*j], tcs[2*j+1]) );
+                    targetNode["subTargets"].append( {"subRef":    targetId[1:], 
+                                                      "texCoords": tcTuples} );
                     
                 tex["targets"].append(targetNode);
             
@@ -88,56 +93,149 @@ def parseTextures(bldg, filename):
     #print (textures)
     #print(sdmRefs);
 
+def parseRing( linearRingElement):
+    #print (linearRingElement, linearRingElement.attrib)
+    assert( "id" in linearRingElement.attrib);
+    ringId = linearRingElement.attrib["id"];
+    posList = linearRingElement.find("posList");
+    assert( "srsDimension" in posList.attrib);
+    assert( posList.attrib["srsDimension"] == "3");
+    verts = [ float(x) for x in posList.text.split(" ")];
+    vertsNew = [];
+    # project coordinates from local EPSG:25833 to the widespread WSG 84 lat/lng
+    for j in range( int(len(verts)/3)):
+        x = verts[j*3];
+        y = verts[j*3+1];
+        latlng = proj(x, y, inverse=True);
+        #print(latlng);
+        #verts[j*3] = latlng[1];
+        #verts[j*3+1]=latlng[0];
+        vertsNew.append( (latlng[1], latlng[0], verts[j*3+2]));
+        
+    
+    return {"id": ringId, "vertices": vertsNew};
 
 def getGeometry(bldg, filename):
     global proj;
     textures = {};
-    #sdms = [];
     
-    polys = [];
-    return textures, [];
-    
+    polys = {};
+   
     
     for i in bldg.iter("Polygon"):
-        assert( i.find("interior") == None);
+        assert( "id" in i.attrib);
+        polyId = i.attrib["id"];
+        poly = {"inner":[]};
         assert( len(i.findall("exterior")) == 1)
         ext = i.find("exterior");
         assert(len(ext.findall("LinearRing")) == 1);
-        ring = ext.find("LinearRing");
-        pl = ring.find("posList").text;
-        #print(pl);
-        pl = [ float(x) for x in pl.split(" ")];
-
-        # project coordinates from local EPSG:25833 to the widespread WSG 84 lat/lng
-        for j in range( int(len(pl)/3)):
-            x = pl[j*3];
-            y = pl[j*3+1];
-            latlng = proj(x, y, inverse=True);
-            #print(latlng);
-            pl[j*3] = latlng[1];
-            pl[j*3+1]=latlng[0];
-
-
-        pid = i.attrib["id"]
-    #    print (i, pid);
-        poly = {};
-        poly["pid"] = pid;
-        poly["coords"] = pl;
-        if pid in textures:
-            tex = textures[pid];
-    #        print(tex);
-            assert( len(tex["coords"]) % 2 == 0 and len(pl) % 3 == 0 and 
-                     len(tex["coords"])/2 == len(pl)/3);
-                     
-            poly["texName"] = tex["uri"]
-            poly["texCoords"] = tex["coords"]
+        poly["outer"] = parseRing( ext.find("LinearRing") )
+        #assert( i.find("interior") == None);
         
-        polys.append(poly);
-    return textures, polys;
+        for inner in i.findall("interior"):
+            assert(len(inner.findall("LinearRing")) == 1);
+            poly["inner"].append( parseRing(inner.find("LinearRing")));
+            
+        #print(poly);
+        #exit(0);
+        #print(pl);
 
 
-for i in range(1,19463):
-#for i in [9225,]:
+    #    print (i, pid);
+        #if pid in textures:
+        #    tex = textures[pid];
+        #    assert( len(tex["coords"]) % 2 == 0 and len(pl) % 3 == 0 and 
+        #             len(tex["coords"])/2 == len(pl)/3);
+        #    poly["texName"] = tex["uri"]
+        #    poly["texCoords"] = tex["coords"]
+        
+        assert( not polyId in polys)
+        polys[polyId] = poly;
+        #polys.append(poly);
+    return polys;
+
+def integrateRing( geomRing, texRing, filename ):
+    #print("IR");
+    #print(texRing);
+
+    if len(texRing) == len(geomRing["vertices"]):
+        # normal case: there is a texCoord tuple for each vertex
+        # convert (lat, lng, z) and (s, t) ==> (lat, lng, z, s, t)
+        return [ a[0] + a[1] for a in zip( geomRing["vertices"], texRing)];
+
+    print("[WARN] mismatch of #vertices <-> #texCoords in surface", geomRing["id"], 
+          "in building", filename)
+
+    #print(geomRing);
+    #print(len(texRing), len(geomRing["vertices"]))
+    #assert(False);
+    return pseudoIntegrateRing(geomRing);
+
+
+def integratePolygon( texUri, texTarget, polygon, filename):
+    assert("texUri" not in polygon)
+    polygon["texUri"] = texUri;
+    
+    #assert( texTarget["ref"] = polygon["
+    targets = { subTarget["subRef"] : subTarget["texCoords"] for subTarget in texTarget["subTargets"]}
+    
+    #print (texUri, "\n\n", targets, "\n\n", polygon, "\n")
+    #print (polygon["outer"]["id"])
+    assert( polygon["outer"]["id"] in targets)
+    #outer = ;
+            
+    return { "texUri" : texUri,
+             "outer": integrateRing( polygon["outer"], targets[polygon["outer"]["id"]], filename),
+             "inner": [ integrateRing( x, targets[x["id"]], filename) for x in polygon["inner"]]
+             }
+    #print("\n", outer, innerRings)
+    #exit(0)
+
+def pseudoIntegrateRing( ring):
+    return [ (x[0], x[1], x[2], 0, 0) for x in ring["vertices"] ]
+    #print(ring);
+    #exit(0);
+    #pass
+    
+def pseudoIntegratePolygon( polygon ):
+    return {
+        "texUri": None,
+        "outer": pseudoIntegrateRing( polygon["outer"]),
+        "inner": [ pseudoIntegrateRing( x ) for x in polygon["inner"]]
+        }
+
+def integrate(geometry, textures, filename):
+    res = []
+    for tex in textures:
+        for target in tex["targets"]:
+            targetRef = target["ref"]
+            #print("texture", tex["id"], "has target", );
+            if not targetRef in geometry:
+                print("[WARN] texture", tex["id"], "references non-existing target", targetRef,
+                      "in building", filename)
+                continue
+                
+            res.append(integratePolygon( tex["imageUri"], target, geometry[targetRef], filename));
+            del geometry[targetRef];    # has been merged --> remove from todo-list
+    
+    # At this point, all entries left in 'geometry' are not referenced by any texture.
+    # To be able to render them anyway we add dummy texture coordinates and a 'null'
+    # texture to each.
+    # Note: usually, those are GroundSurfaces, for which to texture could be recorded
+    # TODO: tag each surface with its type (ground, wall, roof), and throw warnings only when
+    #       an untextured surface is not a ground surface
+    #       Alternative: ignore groud surfaces completely when initially parsing the geometry
+    for untexturedPolygon in geometry:
+        #print("[WARN] surface", untexturedPolygon,"in",filename, "has no associated texture")
+        res.append( pseudoIntegratePolygon( geometry[untexturedPolygon]));
+
+    return res;
+        
+
+    
+    
+#for i in range(1,19463):
+for i in [9455]:
     filename = 'buildings/bldg'+str(i);
     #print("reading file", filename+".xml");
 
@@ -147,18 +245,14 @@ for i in range(1,19463):
     f = open(filename+".xml", 'rb')
     s = str(f.read(), "utf-8")
     f.close()
-
    
-    #fOut = open("tmp.xml", "wb");
-    #fOut.write( bytes(s, "utf-8"));
-    #fOut.close();
-    #print(s);
-    
     bldg = ET.fromstring(s).find("Building");
+    buildingId = bldg.attrib["id"]
 
     try:
-        textures = parseTextures(bldg, filename);
-#        textures, geo = getGeometry(bldg, filename);
+        textures = parseTextures(bldg, buildingId);
+        geometry = getGeometry(bldg, buildingId);
+        res = integrate(geometry, textures, buildingId);
     except Exception as e:
         print("in file", filename, e)
 #        print( e);
@@ -167,9 +261,17 @@ for i in range(1,19463):
     #    continue;
 
     #print(textures)
+    #asJson = json.dumps(geometry, sort_keys=True, indent=4, separators=(',', ': '));
+    #fOut = open("geom.json", "wb");
     #asJson = json.dumps(textures, sort_keys=True, indent=4, separators=(',', ': '));
     #fOut = open("tmp.json", "wb");
     #fOut.write( bytes(asJson, "utf-8"));
     #fOut.close();
+    
+    #asJson = json.dumps(res, sort_keys=True, indent=4, separators=(',', ': '));
+    #fOut = open("res.json", "wb");
+    #fOut.write( bytes(asJson, "utf-8"));
+    #fOut.close();
+
 
 
