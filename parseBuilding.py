@@ -172,7 +172,7 @@ def integrateRing( geomRing, texRing, filename ):
     return pseudoIntegrateRing(geomRing);
 
 
-def integratePolygon( texUri, texTarget, polygon, filename):
+def integratePolygon( texUri, texId, texTarget, polygon, filename):
     assert("texUri" not in polygon)
     polygon["texUri"] = texUri;
     
@@ -183,10 +183,21 @@ def integratePolygon( texUri, texTarget, polygon, filename):
     #print (polygon["outer"]["id"])
     assert( polygon["outer"]["id"] in targets)
     #outer = ;
+
+    innerRings = [];
+    
+    for inner in polygon["inner"]:
+        if inner["id"] in targets:
+            innerRings.append( integrateRing( inner, targets[inner["id"]], filename))
+        else:
+            print("[WARN] in building", filename,
+                  ": texture", texId, "references surface", texTarget["ref"], "but does not supply texture coordinates for child ring", inner["id"]);
+            innerRings.append( pseudoIntegrateRing( inner));
+#            exit(0);
             
     return { "texUri" : texUri,
              "outer": integrateRing( polygon["outer"], targets[polygon["outer"]["id"]], filename),
-             "inner": [ integrateRing( x, targets[x["id"]], filename) for x in polygon["inner"]]
+             "inner": innerRings
              }
     #print("\n", outer, innerRings)
     #exit(0)
@@ -215,7 +226,7 @@ def integrate(geometry, textures, filename):
                       "in building", filename)
                 continue
                 
-            res.append(integratePolygon( tex["imageUri"], target, geometry[targetRef], filename));
+            res.append(integratePolygon( tex["imageUri"], tex["id"], target, geometry[targetRef], filename));
             del geometry[targetRef];    # has been merged --> remove from todo-list
     
     # At this point, all entries left in 'geometry' are not referenced by any texture.
@@ -233,10 +244,11 @@ def integrate(geometry, textures, filename):
         
 
     
-    
-#for i in range(1,19463):
-for i in [9455]:
-    filename = 'buildings/bldg'+str(i);
+
+PATH = 'buildings/'
+for i in range(1,19463):
+#for i in [9455]:
+    filename = PATH + 'bldg'+str(i);
     #print("reading file", filename+".xml");
 
     if i % 1000 == 0:
@@ -268,10 +280,10 @@ for i in [9455]:
     #fOut.write( bytes(asJson, "utf-8"));
     #fOut.close();
     
-    #asJson = json.dumps(res, sort_keys=True, indent=4, separators=(',', ': '));
-    #fOut = open("res.json", "wb");
-    #fOut.write( bytes(asJson, "utf-8"));
-    #fOut.close();
+    asJson = json.dumps(res);
+    fOut = open("geometry/bldg"+str(i)+".json", "wb");
+    fOut.write( bytes(asJson, "utf-8"));
+    fOut.close();
 
 
 
