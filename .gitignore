@@ -1,9 +1,10 @@
 
-CMake*
-Makefile
+appearance
+atlas
 buildings
-*~
+geometry
+source
+tiles
 
-*.xml
+*~
 *.json
-*.cc

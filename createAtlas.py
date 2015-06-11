@@ -192,7 +192,7 @@ def createAtlas(tiles):
         assert( srcImg.size[0] == tile["width"] and srcImg.size[1] == tile["height"])
         atlas.paste( srcImg, (tile["left"], tile["top"]))
 
-    atlas.save("atlas.jpg", quality=90, optimize=True); # subsampling=0
+    atlas.save("atlas/70415_42974.jpg", quality=90, optimize=True); # subsampling=0
     return texelsUsed;
 
 def createAtlasPdf(tiles, bins):
@@ -218,6 +218,51 @@ def createAtlasPdf(tiles, bins):
     surface.finish();
     surface.flush();
 
+def updateGeometryTile( filename, tiles):
+    global ATLAS_WIDTH, ATLAS_HEIGHT
+    
+    f = open(filename, "rb")
+    polys = json.loads( str(f.read(), "utf8"))
+    f.close()
+    
+    tiles = { tile["uri"] : tile for tile in tiles}
+    #print(tiles);
+    
+    
+    for poly in polys:
+        if (poly["texUri"] == None):
+            continue;
+            
+        assert(poly["texUri"] in tiles)
+        tile = tiles[poly["texUri"]] # look up where this polygon's texture has been mapped to
+        poly["texUri"] = "atlas/70415_42974.jpg";
+        
+        for pos in poly["outer"]:
+            s = pos[3];
+            # CityGML seems to store texture corodinates with the positive t-axis going up,
+            # while OpenGL uses the opposite convention. So while we are touching texture
+            # coordinates, convert this convention as well
+            t = 1-pos[4];
+            
+            pos[3] =  (tile["left"] + s * tile["width"]) / 4096.0;
+            pos[4] =  (tile["top"] + t * tile["height"]) / 4096.0;
+            assert (pos[3] <= 1.0 and pos[4] <= 1.0)
+
+        for ring in poly["inner"]:
+            print("BEEP");
+            for pos in ring:
+                print(pos[0])
+                s = pos[3];
+                # convert t-coordinate from CityGML to OpenGL convention, same as above
+                t = 1-pos[4];
+                
+                pos[3] =  (tile["left"] + s * tile["width"]) / 4096.0;
+                pos[4] =  (tile["top"] + t * tile["height"]) / 4096.0;
+                assert (pos[3] <= 1.0 and pos[4] <= 1.0)
+                
+        #print(poly)
+    
+    open(filename+".tmp", "wb").write( bytes(json.dumps(polys), "utf8"))
 
 
 ##### main #####
@@ -232,8 +277,9 @@ texSizes.sort( key=lambda x: x[0][0]*x[0][1], reverse=True);
 bins, tiles = binPack(texSizes, bins)
 
 texelsUsed = createAtlas(tiles);
-createAtlasPdf(tiles, bins);
+#createAtlasPdf(tiles, bins);
 
+updateGeometryTile("tiles/70415_42974.json", tiles)
 print("Texels used: ", texelsUsed/1000, "k")
 
 
