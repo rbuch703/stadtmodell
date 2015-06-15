@@ -18,7 +18,6 @@ def parseTextures(bldg, filename):
 
         #print("Appearance");
         for sdm in appr.iter("surfaceDataMember"):
-            #print("\tsdm");
             if not len(sdm): #the surfaceDataMember has no children --> is just a reference
                 assert("href" in sdm.attrib);
                 href = sdm.attrib["href"];
@@ -74,26 +73,12 @@ def parseTextures(bldg, filename):
                 tex["targets"].append(targetNode);
             
             textures.append(tex);
-            #assert(len(tcs) == 1)
-            #tc = tcs[0];
-            ##print(uri, targetUri);
-            #textures[targetUri] = {"uri":uri, "coords":texCoords};
     sdmRefs = set(sdmRefs);
-    #print("refs:")#, sdmRefs);
-    #for ref in sdmRefs:
-    #    print("\t", ref);
-    #print("textures:")#, textures);
-    #for tex in textures:
-    #    print("\t", tex["id"]);
-    #print("len before:", len(textures));
+
     textures = [ tex for tex in textures if tex["id"] in sdmRefs];   
     return textures;
-    #print("len after:", len(textures));
-    #exit(0);
-    #print (textures)
-    #print(sdmRefs);
 
-def parseRing( linearRingElement):
+def parseRing( linearRingElement, baseHeight):
     #print (linearRingElement, linearRingElement.attrib)
     assert( "id" in linearRingElement.attrib);
     ringId = linearRingElement.attrib["id"];
@@ -106,11 +91,12 @@ def parseRing( linearRingElement):
     for j in range( int(len(verts)/3)):
         x = verts[j*3];
         y = verts[j*3+1];
+        z = verts[j*3+2] - baseHeight;
         latlng = proj(x, y, inverse=True);
         #print(latlng);
         #verts[j*3] = latlng[1];
         #verts[j*3+1]=latlng[0];
-        vertsNew.append( (latlng[1], latlng[0], verts[j*3+2]));
+        vertsNew.append( (latlng[1], latlng[0], z));
         
     
     return {"id": ringId, "vertices": vertsNew};
@@ -120,7 +106,21 @@ def getGeometry(bldg, filename):
     textures = {};
     
     polys = {};
+    
+    baseHeight = None
+    
+    for bounds in bldg.findall("boundedBy"):
+        if len( bounds.findall("Envelope")) != 1:
+            continue;
+            
+        env = bounds.findall("Envelope")[0];
+        assert( len(env.findall("lowerCorner")) == 1)
+        lower = env.findall("lowerCorner")[0];
+        lower = lower.text.split(" ");
+        assert(len(lower) == 3);
+        baseHeight = float( lower[2]);
    
+    assert(baseHeight != None);
     
     for i in bldg.iter("Polygon"):
         assert( "id" in i.attrib);
@@ -129,34 +129,19 @@ def getGeometry(bldg, filename):
         assert( len(i.findall("exterior")) == 1)
         ext = i.find("exterior");
         assert(len(ext.findall("LinearRing")) == 1);
-        poly["outer"] = parseRing( ext.find("LinearRing") )
+        poly["outer"] = parseRing( ext.find("LinearRing"), baseHeight )
         #assert( i.find("interior") == None);
         
         for inner in i.findall("interior"):
             assert(len(inner.findall("LinearRing")) == 1);
-            poly["inner"].append( parseRing(inner.find("LinearRing")));
+            poly["inner"].append( parseRing(inner.find("LinearRing"), baseHeight))
             
-        #print(poly);
-        #exit(0);
-        #print(pl);
-
-
-    #    print (i, pid);
-        #if pid in textures:
-        #    tex = textures[pid];
-        #    assert( len(tex["coords"]) % 2 == 0 and len(pl) % 3 == 0 and 
-        #             len(tex["coords"])/2 == len(pl)/3);
-        #    poly["texName"] = tex["uri"]
-        #    poly["texCoords"] = tex["coords"]
         
         assert( not polyId in polys)
         polys[polyId] = poly;
-        #polys.append(poly);
     return polys;
 
 def integrateRing( geomRing, texRing, filename ):
-    #print("IR");
-    #print(texRing);
 
     if len(texRing) == len(geomRing["vertices"]):
         # normal case: there is a texCoord tuple for each vertex
@@ -166,9 +151,6 @@ def integrateRing( geomRing, texRing, filename ):
     print("[WARN] mismatch of #vertices <-> #texCoords in surface", geomRing["id"], 
           "in building", filename)
 
-    #print(geomRing);
-    #print(len(texRing), len(geomRing["vertices"]))
-    #assert(False);
     return pseudoIntegrateRing(geomRing);
 
 
@@ -176,13 +158,8 @@ def integratePolygon( texUri, texId, texTarget, polygon, filename):
     assert("texUri" not in polygon)
     polygon["texUri"] = texUri;
     
-    #assert( texTarget["ref"] = polygon["
     targets = { subTarget["subRef"] : subTarget["texCoords"] for subTarget in texTarget["subTargets"]}
-    
-    #print (texUri, "\n\n", targets, "\n\n", polygon, "\n")
-    #print (polygon["outer"]["id"])
     assert( polygon["outer"]["id"] in targets)
-    #outer = ;
 
     innerRings = [];
     
@@ -193,20 +170,14 @@ def integratePolygon( texUri, texId, texTarget, polygon, filename):
             print("[WARN] in building", filename,
                   ": texture", texId, "references surface", texTarget["ref"], "but does not supply texture coordinates for child ring", inner["id"]);
             innerRings.append( pseudoIntegrateRing( inner));
-#            exit(0);
             
     return { "texUri" : texUri,
              "outer": integrateRing( polygon["outer"], targets[polygon["outer"]["id"]], filename),
              "inner": innerRings
              }
-    #print("\n", outer, innerRings)
-    #exit(0)
 
 def pseudoIntegrateRing( ring):
     return [ (x[0], x[1], x[2], 0, 0) for x in ring["vertices"] ]
-    #print(ring);
-    #exit(0);
-    #pass
     
 def pseudoIntegratePolygon( polygon ):
     return {
@@ -267,19 +238,8 @@ for i in range(1,19463):
         res = integrate(geometry, textures, buildingId);
     except Exception as e:
         print("in file", filename, e)
-#        print( e);
         raise;
-    #    print("building", i, "too complex, skipping");
-    #    continue;
-
-    #print(textures)
-    #asJson = json.dumps(geometry, sort_keys=True, indent=4, separators=(',', ': '));
-    #fOut = open("geom.json", "wb");
-    #asJson = json.dumps(textures, sort_keys=True, indent=4, separators=(',', ': '));
-    #fOut = open("tmp.json", "wb");
-    #fOut.write( bytes(asJson, "utf-8"));
-    #fOut.close();
-    
+   
     asJson = json.dumps(res);
     fOut = open("geometry/bldg"+str(i)+".json", "wb");
     fOut.write( bytes(asJson, "utf-8"));

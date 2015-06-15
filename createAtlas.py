@@ -289,10 +289,9 @@ def createAtlasBasedGeometryTile( inputFileName, outputFileName, tiles):
 
             for ring in poly["inner"]:
                 for pos in ring:
-	                s = max(min(pos[3], 1.0), 0.0);
+                    s = max(min(pos[3], 1.0), 0.0);
                     # convert t-coordinate from CityGML to OpenGL convention, same as above
-	                t = max(min(1-pos[4], 1.0), 0.0);
-                    
+                    t = max(min(1-pos[4], 1.0), 0.0);
                     pos[3] =  (tile["left"] + s * tile["width"]) / ATLAS_WIDTH;
                     pos[4] =  (tile["top"] + t * tile["height"]) / ATLAS_HEIGHT;
                     assert (pos[3] <= 1.0 and pos[4] <= 1.0)
@@ -325,7 +324,10 @@ OUTPUT_DIR = "atlas";
 if INPUT_DIR[-1]  not in ["/", "\\"]: INPUT_DIR += "/";
 if OUTPUT_DIR[-1] not in ["/", "\\"]: OUTPUT_DIR+= "/";
 
-for filename in os.listdir(INPUT_DIR):
+files = list(os.listdir(INPUT_DIR));
+files.sort();
+
+for filename in files:
 #for filename in ["70417_42985.json"]:
     if not re.match("^\\d+_\\d+.json$", filename):
         continue
