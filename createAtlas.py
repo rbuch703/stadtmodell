@@ -1,8 +1,9 @@
 #! /usr/bin/python3
 
 from PIL import Image;
+from math import ceil, log;
 import json;
-import cairo;
+#import cairo;
 import os;
 import re;
 
@@ -27,9 +28,9 @@ def getTextureSizes( geometryTileFileName):
     for texUri in textures:
         im = Image.open(texUri);
         size = list(im.size);
-        while (size[0] > 512 or size[1] > 512):
-            if size[0] > 1: size[0] >>= 1;
-            if size[1] > 1: size[1] >>= 1;
+        
+        size[0] = min( size[0], 512);
+        size[1] = min( size[1], 512);
         
         if im.size[0] != size[0] or im.size[1] != size[1]:
             pass
@@ -84,7 +85,7 @@ def getResiduals( theBin, itemSize):
                   "top":   theBin["top"] + itemHeight, 
                   "width": binWidth,
                   "height":binHeight - itemHeight,
-                  "uri"   :theBin["uri"]},
+                  "atlas"   :theBin["atlas"]},
                    None);
 
     # case 3: item fills whole height --> Y == Z == ∅ --> residual: (X)
@@ -93,7 +94,7 @@ def getResiduals( theBin, itemSize):
                   "top":   theBin["top"],
                   "width": binWidth - itemWidth,
                   "height":binHeight,
-                  "uri"   :theBin["uri"]},
+                  "atlas"   :theBin["atlas"]},
                    None);
     
     residualArea = getBinArea(theBin) - (itemSize[0]*itemSize[1]);
@@ -105,13 +106,13 @@ def getResiduals( theBin, itemSize):
               "top": theBin["top"] + itemHeight,
               "width":  itemWidth,
               "height": binHeight - itemHeight,
-              "uri"   :theBin["uri"]}
+              "atlas"   :theBin["atlas"]}
               
     resA1 = { "left": theBin["left"] + itemWidth,
               "top":  theBin["top"],
               "width": binWidth - itemWidth, 
               "height":binHeight,
-              "uri"   :theBin["uri"]}
+              "atlas"   :theBin["atlas"]}
 
     assert( getBinArea(resA0) + getBinArea(resA1) == residualArea);
     qA = getSubdivisionQuality( resA0, resA1);
@@ -123,13 +124,13 @@ def getResiduals( theBin, itemSize):
               "top":    theBin["top"],
               "width":  binWidth - itemWidth, 
               "height": itemHeight,
-              "uri"   :theBin["uri"]}
+              "atlas"   :theBin["atlas"]}
               
     resB1 = { "left": theBin["left"],
               "top": theBin["top"] + itemHeight,
               "width": binWidth,
               "height": binHeight - itemHeight,
-              "uri"   :theBin["uri"]}
+              "atlas"   :theBin["atlas"]}
               
     assert( getBinArea(resB0) + getBinArea(resB1) == residualArea);
     qB = getSubdivisionQuality( resB0, resB1);
@@ -153,7 +154,7 @@ def tryPack(item, bins):
                  "width": itemWidth,
                  "height":itemHeight,
                  "srcUri":   item[1],
-                 "atlasUri": bins[i]["uri"]}
+                 "atlas": bins[i]["atlas"]}
         bins[i] = bins[-1];
         bins.pop()
         if res0: bins.append(res0);
@@ -162,115 +163,167 @@ def tryPack(item, bins):
     
     return None;
 
+def nextHigherPowerOfTwo(a):
+    aOrig = a
+    power = ceil( log(a)/log(2));
+    
+    res = 1 << power;
+    assert( res >= aOrig and res < 2*aOrig)
+    return res;
+
+def getOptimalBinSize(texSizes):
+    global MAX_ATLAS_WIDTH, MAX_ATLAS_HEIGHT;
+    texelsLeft = sum([ x[0][0] * x[0][1] for x in texSizes])
+    maxWidth = max( [x[0][0] for x in texSizes])
+    maxHeight =max( [x[0][1] for x in texSizes])
+    
+    width = nextHigherPowerOfTwo(maxWidth)
+    height= nextHigherPowerOfTwo(maxHeight)
+    assert( width <= MAX_ATLAS_WIDTH and height <= MAX_ATLAS_HEIGHT)
+
+    # try to make the new atlas bin big enough to fit the remaining tiles with as little
+    # slack as possible. Since each loop iteration double the length of one texture edge
+    # (to let textures keep power-of-two edges), the texture area double in every iteration.
+    # - a FILL_RATIO of 1.0 would ensure an atlas size between 1x and 2x as big as needed,
+    #   wasting considerable GPU memory
+    # - a FILLRATION of 0.5 would ensure an atlas size between 0.5x and 1x as big as needed,
+    #   wasting no space, but creating a lot of independent textures
+    FILL_RATIO = 0.7;    
+    while (width < MAX_ATLAS_WIDTH or height < MAX_ATLAS_HEIGHT) and (width*height < FILL_RATIO*texelsLeft):
+        if width < height:
+            width *= 2;
+        else:
+            height *= 2;
+    
+    if width < 256: width = 256;
+    if height < 256: height = 256;
+            
+    assert( width <= MAX_ATLAS_WIDTH and height <= MAX_ATLAS_HEIGHT)
+    
+    #print(texelsLeft, maxWidth, maxHeight, width, height)
+    return width, height
+    #exit(0);
+    
 
 def binPack(texSizes, atlasBaseName):
-    global ATLAS_WIDTH, ATLAS_HEIGHT;
     numBins = 0;
     bins = []
     tiles = [];
     
-    for item in texSizes:
-        bins.sort( key=lambda x: x["width"] * x["height"], reverse=False);
-        tile = tryPack(item, bins);
+    while len(texSizes) > 0:
+        size = getOptimalBinSize(texSizes);
+        # there wasn't enough space left --> need to create an additional atlas file
+        # and try again
+        newBin = {"top": 0, "left":0, "width": size[0], "height": size[1], 
+                  "atlas": { "width": size[0], 
+                             "height":size[1], 
+                             "uri": atlasBaseName + "_" + str(numBins) + ".jpg"
+                           }
+                 }
+        #print("creating new atlas file '" + newBin["uri"] + "'");
+        numBins += 1;
+        bins.append(newBin);
 
-        if not tile: 
-            # there wasn't enough space left --> need to create an additional atlas file
-            # and try again
-            newBin = {"top": 0, "left":0, "width": ATLAS_WIDTH, "height": ATLAS_HEIGHT, 
-         "uri": atlasBaseName + "_" + str(numBins) + ".jpg"}
-            #print("creating new atlas file '" + newBin["uri"] + "'");
-            numBins += 1;
-            bins = [newBin] + bins;
-            tile = tryPack(item, bins)
-        
-        assert(tile and "logic error")
-        tiles.append(tile);
+        for texIdx in range(len(texSizes)):
+            item = texSizes[texIdx];
+            bins.sort( key=lambda x: x["width"] * x["height"], reverse=False);
+            tile = tryPack(item, bins);
+            
+            if tile:
+                texSizes[texIdx] = None;
+                tiles.append(tile);
+                
+        texSizes = [x for x in texSizes if x != None];
+
     print("geometry tile", atlasBaseName, "has", numBins, "atlas textures")
     return bins, tiles
 
 def createAtlas(tiles):
-    global ATLAS_WIDTH, ATLAS_HEIGHT
     
-    atlases = set( {tile["atlasUri"] for tile in tiles})
+    atlases = {tile["atlas"]["uri"]: tile["atlas"] for tile in tiles}
     
     texelsUsed = 0;
     for atlasUri in atlases:
-        
-        atlas = Image.new("RGB", [ATLAS_WIDTH, ATLAS_HEIGHT])
-        for tile in [x for x in tiles if x["atlasUri"] == atlasUri]:
+        atlas = atlases[atlasUri]
+        atlasImg = Image.new("RGB", [atlas["width"], atlas["height"]])
+        for tile in [x for x in tiles if x["atlas"] == atlas]:
             texelsUsed += tile["width"] * tile["height"];
            
             srcImg = Image.open( tile["srcUri"])
             size = list(srcImg.size);
             
-            while (size[0] > 512 or size[1] > 512):
-                if size[0] > 1: size[0] >>= 1;
-                if size[1] > 1: size[1] >>= 1;
+            size[0] = min( size[0], 512);
+            size[1] = min( size[1], 512);
             
             if srcImg.size[0] != size[0] or srcImg.size[1] != size[1]:
                 #print( "[WARN] reducing size of texture", tile["uri"], "from", srcImg.size, "to", size);
                 srcImg = srcImg.resize( size, Image.LANCZOS);
             
             assert( srcImg.size[0] == tile["width"] and srcImg.size[1] == tile["height"])
-            atlas.paste( srcImg, (tile["left"], tile["top"]))
+            atlasImg.paste( srcImg, (tile["left"], tile["top"]))
 
-        atlas.save(atlasUri, quality=90, optimize=True); # subsampling=0
+        atlasImg.save(atlas["uri"], quality=90, optimize=True); # subsampling=0
 
-        atlas = atlas.resize([ int(ATLAS_WIDTH/2), int(ATLAS_HEIGHT/2)]);
-        atlas.save(atlasUri+".half", quality=90, optimize=True, format="JPEG");
+        atlasImg = atlasImg.resize([ atlas["width"] >> 1, atlas["height"] >> 1]);
+        atlasImg.save(atlas["uri"]+".half", quality=90, optimize=True, format="JPEG");
 
-        atlas = atlas.resize([ int(ATLAS_WIDTH/4), int(ATLAS_HEIGHT/4)]);
-        atlas.save(atlasUri+".quarter", quality=90, optimize=True, format="JPEG");
+        atlasImg = atlasImg.resize([ atlas["width"] >> 2, atlas["height"] >> 2]);
+        atlasImg.save(atlas["uri"]+".quarter", quality=90, optimize=True, format="JPEG");
         
         
     return texelsUsed;
 
-def createAtlasPdf(tiles, bins):
-    surface = cairo.PDFSurface("map.pdf", ATLAS_WIDTH, ATLAS_HEIGHT);
-    ctx = cairo.Context (surface);
-    ctx.set_line_width (1/2000)
-    for tile in tiles:
-        ctx.rectangle( tile["left"], tile["top"], tile["width"], tile["height"]); 
-        ctx.set_source_rgba(1, 0, 0, 0.5);
-        ctx.fill_preserve();
-
-        ctx.set_source_rgb(0, 0, 0);
-        ctx.stroke();
-
-    for tile in bins:
-        ctx.rectangle( tile["left"], tile["top"], tile["width"], tile["height"]); 
-        ctx.set_source_rgba(0, 0, 1, 0.5);
-        ctx.fill_preserve();
-
-        ctx.set_source_rgb(0, 0, 0);
-        ctx.stroke();
-
-    surface.finish();
-    surface.flush();
+#def createAtlasPdf(tiles, bins):
+#    surface = cairo.PDFSurface("map.pdf", ATLAS_WIDTH, ATLAS_HEIGHT);
+#    ctx = cairo.Context (surface);
+#    ctx.set_line_width (1/2000)
+#    for tile in tiles:
+#        ctx.rectangle( tile["left"], tile["top"], tile["width"], tile["height"]); 
+#        ctx.set_source_rgba(1, 0, 0, 0.5);
+#        ctx.fill_preserve();
+#
+#        ctx.set_source_rgb(0, 0, 0);
+#        ctx.stroke();
+#
+#    for tile in bins:
+#        ctx.rectangle( tile["left"], tile["top"], tile["width"], tile["height"]); 
+#        ctx.set_source_rgba(0, 0, 1, 0.5);
+#        ctx.fill_preserve();
+#
+#        ctx.set_source_rgb(0, 0, 0);
+#        ctx.stroke();
+#
+#    surface.finish();
+#    surface.flush();
 
 def createAtlasBasedGeometryTile( inputFileName, outputFileName, tiles):
-    global ATLAS_WIDTH, ATLAS_HEIGHT
+    #global ATLAS_WIDTH, ATLAS_HEIGHT
     f = open(inputFileName, "rb")
     polys = json.loads( str(f.read(), "utf8"))
     f.close()
     
-    atlases = set( tile["atlasUri"] for tile in tiles);
+    atlases = {tile["atlas"]["uri"]: tile["atlas"] for tile in tiles}
+    #atlases = set( tile["atlasUri"] for tile in tiles);
     res = [];
     
-    
-    tiles = { tile["srcUri"] : tile for tile in tiles}
     
     geometry = {};
     #print(polys);
     #exit(0);
+    #for tile in tiles:
+    #    print(tile);
+        
+    atlases = {tile["atlas"]["uri"]: tile["atlas"] for tile in tiles}
+    tiles = { tile["srcUri"] : tile for tile in tiles}
     
     for atlasUri in atlases:
+        atlas = atlases[atlasUri]
         atlasGeometry = [];
-        for poly in [x for x in polys if "texUri" in x and x["texUri"] in tiles and tiles[x["texUri"]]["atlasUri"] == atlasUri]:
+        for poly in [x for x in polys if "texUri" in x and x["texUri"] in tiles and tiles[x["texUri"]]["atlas"] == atlas]:
             assert(poly["texUri"] in tiles)
             tile = tiles[poly["texUri"]] # look up where this polygon's texture has been mapped to
-            if tile["atlasUri"] != atlasUri:
-                continue;
+            assert( tile["atlas"] == atlas)
+#                continue;
              
             del poly["texUri"];   
             
@@ -281,9 +334,8 @@ def createAtlasBasedGeometryTile( inputFileName, outputFileName, tiles):
                 # while OpenGL uses the opposite convention. So while we are touching texture
                 # coordinates, convert this convention as well
                 t = max(min(1-pos[4], 1.0), 0.0);
-                
-                pos[3] =  (tile["left"] + s * tile["width"]) / ATLAS_WIDTH;
-                pos[4] =  (tile["top"] + t * tile["height"]) / ATLAS_HEIGHT;
+                pos[3] =  (tile["left"] + s * tile["width"]) / atlas["width"];
+                pos[4] =  (tile["top"] + t * tile["height"]) / atlas["height"];
                 #print( pos[3], pos[4]);
                 assert (pos[3] <= 1.0 and pos[4] <= 1.0)
 
@@ -292,8 +344,8 @@ def createAtlasBasedGeometryTile( inputFileName, outputFileName, tiles):
                     s = max(min(pos[3], 1.0), 0.0);
                     # convert t-coordinate from CityGML to OpenGL convention, same as above
                     t = max(min(1-pos[4], 1.0), 0.0);
-                    pos[3] =  (tile["left"] + s * tile["width"]) / ATLAS_WIDTH;
-                    pos[4] =  (tile["top"] + t * tile["height"]) / ATLAS_HEIGHT;
+                    pos[3] =  (tile["left"] + s * tile["width"]) / atlas["width"];
+                    pos[4] =  (tile["top"] + t * tile["height"]) / atlas["height"];
                     assert (pos[3] <= 1.0 and pos[4] <= 1.0)
             atlasGeometry.append(poly)
         geometry[atlasUri] = atlasGeometry;
@@ -315,9 +367,8 @@ def createAtlasBasedGeometryTile( inputFileName, outputFileName, tiles):
 ##### main #####
 
 # maximum guaranteed supported resolution of WebGL is 2048x2048
-ATLAS_WIDTH = 1024
-ATLAS_HEIGHT= 1024
-
+MAX_ATLAS_WIDTH = 2048
+MAX_ATLAS_HEIGHT= 2048
 INPUT_DIR = "tiles";
 OUTPUT_DIR = "atlas";
 
@@ -329,21 +380,28 @@ files.sort();
 
 for filename in files:
 #for filename in ["70417_42985.json"]:
-    if not re.match("^\\d+_\\d+.json$", filename):
+    m = re.match("^(\\d+)_(\\d+).json$", filename)
+    if not m:
         continue
-        
-    fileBase = filename[:-5]
-    print(fileBase)
+
+    x = m.group(1);
+    y = m.group(2);
+    
+    #print(x,y)
+    #exit(0);
+    os.makedirs( OUTPUT_DIR + str(x), exist_ok = True);
+    #fileBase = filename[:-5]
+    #print(fileBase)
     #continue;
         
     texSizes, numPixels = getTextureSizes( INPUT_DIR + filename)
     texSizes.sort( key=lambda x: x[0][0]*x[0][1], reverse=True);
-    bins, tiles = binPack(texSizes, OUTPUT_DIR + fileBase)
+    bins, tiles = binPack(texSizes, OUTPUT_DIR + str(x) + "/" + str(y))
 
     texelsUsed = createAtlas(tiles);
     #createAtlasPdf(tiles, bins);
 
-    createAtlasBasedGeometryTile(INPUT_DIR+filename, OUTPUT_DIR + filename, tiles)
+    createAtlasBasedGeometryTile(INPUT_DIR+filename, OUTPUT_DIR + str(x) + "/" + str(y) + ".json", tiles)
     #print("Texels used: ", texelsUsed/1000, "k")
 
 
