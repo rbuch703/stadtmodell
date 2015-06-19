@@ -48,7 +48,9 @@ def getTilesCovered(bbox, level):
 
 tileData = {}
 
-for i in range(1,19463):
+i = 1;
+
+while os.path.isfile("geometry/bldg"+str(i)+".json"):
     if i % 1000 == 0:
         print( str(int(i/1000)) + "k buildings read");
     geom = json.loads( open("geometry/bldg"+str(i)+".json").read());
@@ -61,11 +63,18 @@ for i in range(1,19463):
             if tilePos not in tileData:
                 tileData[tilePos] = [];
             tileData[tilePos].append(polygon);
+    i+= 1;
 
 print("writing tiles");
 
+numTiles = len(tileData);
+idx = 1;
 for tile in tileData:
-    print (tile, len(tileData[tile]))
+    if idx % 100 == 0:
+        print( idx,"/", numTiles, " geometry tiles written");
+    idx +=1;
+    
+    #print (tile, len(tileData[tile]))
     os.makedirs( "tiles/", exist_ok=True)# + str(tile[0]))
     #f = open( "tiles/"+str(tile[0]) + "/" + str(tile[1]) + ".json")
     f = open( "tiles/"+str(tile[0]) + "_" + str(tile[1]) + ".json", "wb")

@@ -4,6 +4,7 @@ import re;
 import json;
 import xml.etree.ElementTree as ET
 import pyproj;
+import os;
 
 #proj = pyproj.Proj("+proj=utm +zone=33 +ellps=GRS80 +units=m +no_defs");
 proj = pyproj.Proj(init="epsg:25833");
@@ -36,7 +37,7 @@ def parseTextures(bldg, filename):
             
             if child.tag == "X3DMaterial":
                 if theme == "rgbTexture":
-                    print("[warn] untextured surface in textured model in building", filename);
+                    print("[WARN] untextured surface in textured model in building", filename);
                 continue;
             
             assert( child.tag == "ParameterizedTexture");
@@ -47,7 +48,14 @@ def parseTextures(bldg, filename):
                 sdmRefs.append(texId);
             
             uri = texNode.find("imageURI").text
-
+            
+            #print(uri);
+            if not os.path.isfile(uri):
+                print("[ERR ] texture file", uri, "for texture", texId, "in building", filename, "does not exist");
+                #exit(0);
+                continue;
+                
+            #exit(0);
             tex = { "id": texId, "imageUri": uri, "targets":[]}
 
             for target in texNode.findall("target"):
@@ -66,7 +74,7 @@ def parseTextures(bldg, filename):
                     tcTuples = [];
                     assert( len(tcs) % 2 == 0);
                     for j in range( int(len(tcs)/2)):
-                        tcTuples.append( (tcs[2*j], tcs[2*j+1]) );
+                        tcTuples.append( [tcs[2*j], tcs[2*j+1]] );
                     targetNode["subTargets"].append( {"subRef":    targetId[1:], 
                                                       "texCoords": tcTuples} );
                     
@@ -78,7 +86,7 @@ def parseTextures(bldg, filename):
     textures = [ tex for tex in textures if tex["id"] in sdmRefs];   
     return textures;
 
-def parseRing( linearRingElement, baseHeight):
+def parseRing( linearRingElement):
     #print (linearRingElement, linearRingElement.attrib)
     assert( "id" in linearRingElement.attrib);
     ringId = linearRingElement.attrib["id"];
@@ -91,36 +99,38 @@ def parseRing( linearRingElement, baseHeight):
     for j in range( int(len(verts)/3)):
         x = verts[j*3];
         y = verts[j*3+1];
-        z = verts[j*3+2] - baseHeight;
+        z = verts[j*3+2];
         latlng = proj(x, y, inverse=True);
         #print(latlng);
         #verts[j*3] = latlng[1];
         #verts[j*3+1]=latlng[0];
-        vertsNew.append( (latlng[1], latlng[0], z));
+        vertsNew.append( [latlng[1], latlng[0], z]);
         
     
     return {"id": ringId, "vertices": vertsNew};
 
+def getMinHeight(polygon):
+    minHeight = min ( [x[2] for x in polygon["outer"]["vertices"]] )
+    for inner in polygon["inner"]:
+        minHeight = min ( minHeight, min( [x[2] for x in inner["vertices"] ]));
+
+    return minHeight;
+
+def biasHeight(polygon, heightBias):
+        
+    #print(minHeight)
+    for i in range(len(polygon["outer"]["vertices"])):
+        polygon["outer"]["vertices"][i][2] += heightBias
+
+    for inner in polygon["inner"]:
+        for i in range(len(inner["vertices"])):
+            inner["vertices"][i][2] += heightBias
+    
 def getGeometry(bldg, filename):
     global proj;
     textures = {};
     
     polys = {};
-    
-    baseHeight = None
-    
-    for bounds in bldg.findall("boundedBy"):
-        if len( bounds.findall("Envelope")) != 1:
-            continue;
-            
-        env = bounds.findall("Envelope")[0];
-        assert( len(env.findall("lowerCorner")) == 1)
-        lower = env.findall("lowerCorner")[0];
-        lower = lower.text.split(" ");
-        assert(len(lower) == 3);
-        baseHeight = float( lower[2]);
-   
-    assert(baseHeight != None);
     
     for i in bldg.iter("Polygon"):
         assert( "id" in i.attrib);
@@ -129,20 +139,30 @@ def getGeometry(bldg, filename):
         assert( len(i.findall("exterior")) == 1)
         ext = i.find("exterior");
         assert(len(ext.findall("LinearRing")) == 1);
-        poly["outer"] = parseRing( ext.find("LinearRing"), baseHeight )
+        poly["outer"] = parseRing( ext.find("LinearRing"))
         #assert( i.find("interior") == None);
         
         for inner in i.findall("interior"):
             assert(len(inner.findall("LinearRing")) == 1);
-            poly["inner"].append( parseRing(inner.find("LinearRing"), baseHeight))
+            poly["inner"].append( parseRing(inner.find("LinearRing")))
             
-        
         assert( not polyId in polys)
         polys[polyId] = poly;
+    
+    if len(polys) == 0:
+        return {};
+        
+    minHeight = min([ getMinHeight(polys[i]) for i in polys])
+    for i in polys:
+        biasHeight( polys[i], -minHeight);
+
+    minHeight = min([ getMinHeight(polys[i]) for i in polys])
     return polys;
 
 def integrateRing( geomRing, texRing, filename ):
 
+    #print("##", type(geomRing["vertices"]), type(texRing))
+    #print(list(zip( geomRing["vertices"], texRing)));
     if len(texRing) == len(geomRing["vertices"]):
         # normal case: there is a texCoord tuple for each vertex
         # convert (lat, lng, z) and (s, t) ==> (lat, lng, z, s, t)
@@ -203,10 +223,10 @@ def integrate(geometry, textures, filename):
     # At this point, all entries left in 'geometry' are not referenced by any texture.
     # To be able to render them anyway we add dummy texture coordinates and a 'null'
     # texture to each.
-    # Note: usually, those are GroundSurfaces, for which to texture could be recorded
+    # Note: usually, those are GroundSurfaces, for which no texture could be recorded
     # TODO: tag each surface with its type (ground, wall, roof), and throw warnings only when
     #       an untextured surface is not a ground surface
-    #       Alternative: ignore groud surfaces completely when initially parsing the geometry
+    #       Alternative: ignore ground surfaces completely when initially parsing the geometry
     for untexturedPolygon in geometry:
         #print("[WARN] surface", untexturedPolygon,"in",filename, "has no associated texture")
         res.append( pseudoIntegratePolygon( geometry[untexturedPolygon]));
@@ -214,13 +234,28 @@ def integrate(geometry, textures, filename):
     return res;
         
 
+TEXTURE_INPUT_DIR = "./"
+#if TEXTURE_INPUT_DIR[-1] not in ["/", "\\"]: TEXTURE_INPUT_DIR+= "/";
+#
+#dirs = list(os.listdir( TEXTURE_INPUT_DIR+"appearance/"))
+#for dir_ in dirs:
+#    if not os.path.isdir(dir_):
+#        continue
+#        
+#    for file_ in os.listdir( TEXTURE_INPUT_DIR+"appearance/"+dir_):
+#        fileName = TEXTURE_INPUT_DIR+"appearance/"+dir_+"/" + file_;
+#        if not os.path.isfile(fileName):
+#            continue
+#        textureFiles.append( fileName)
+#    print(dir_);
+#exit(0);
     
 
 PATH = 'buildings/'
-for i in range(1,19463):
+i = 1;
+while os.path.isfile( PATH + 'bldg'+str(i)+".xml"):
 #for i in [9455]:
     filename = PATH + 'bldg'+str(i);
-    #print("reading file", filename+".xml");
 
     if i % 1000 == 0:
         print( str(int(i/1000))+ "k buildings converted");
@@ -244,6 +279,8 @@ for i in range(1,19463):
     fOut = open("geometry/bldg"+str(i)+".json", "wb");
     fOut.write( bytes(asJson, "utf-8"));
     fOut.close();
+    
+    i+=1
 
 
 
