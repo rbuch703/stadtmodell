@@ -5,11 +5,16 @@ import json;
 import xml.etree.ElementTree as ET
 import pyproj;
 import os;
+import hashlib;
 
 #proj = pyproj.Proj("+proj=utm +zone=33 +ellps=GRS80 +units=m +no_defs");
 proj = pyproj.Proj(init="epsg:25833");
 
+digests = {}
+texUris = set();
+
 def parseTextures(bldg, filename):
+    global digests, texUris;
     textures = [];
     sdmRefs = [];
     for i in bldg.iter("appearance"):
@@ -54,6 +59,19 @@ def parseTextures(bldg, filename):
                 print("[ERR ] texture file", uri, "for texture", texId, "in building", filename, "does not exist");
                 #exit(0);
                 continue;
+            
+            
+            m = hashlib.md5()
+            m.update( open(uri, "rb").read())
+            dig = m.digest()
+            
+            if not dig in digests:
+                digests[dig] = uri
+            elif uri != digests[dig]:
+                print("[WARN] identical textures", uri, "and", digests[dig]);
+                uri = digests[dig]
+
+
                 
             #exit(0);
             tex = { "id": texId, "imageUri": uri, "targets":[]}
@@ -85,6 +103,7 @@ def parseTextures(bldg, filename):
 
     textures = [ tex for tex in textures if tex["id"] in sdmRefs];   
     return textures;
+
 
 def parseRing( linearRingElement):
     #print (linearRingElement, linearRingElement.attrib)
@@ -168,7 +187,7 @@ def integrateRing( geomRing, texRing, filename ):
         # convert (lat, lng, z) and (s, t) ==> (lat, lng, z, s, t)
         return [ a[0] + a[1] for a in zip( geomRing["vertices"], texRing)];
 
-    print("[WARN] mismatch of #vertices <-> #texCoords in surface", geomRing["id"], 
+    print("[ERR ] mismatch of #vertices <-> #texCoords in surface", geomRing["id"], 
           "in building", filename)
 
     return pseudoIntegrateRing(geomRing);
@@ -187,7 +206,7 @@ def integratePolygon( texUri, texId, texTarget, polygon, filename):
         if inner["id"] in targets:
             innerRings.append( integrateRing( inner, targets[inner["id"]], filename))
         else:
-            print("[WARN] in building", filename,
+            print("[ERR ] in building", filename,
                   ": texture", texId, "references surface", texTarget["ref"], "but does not supply texture coordinates for child ring", inner["id"]);
             innerRings.append( pseudoIntegrateRing( inner));
             
