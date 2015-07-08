@@ -1,11 +1,117 @@
 #! /usr/bin/python3
 
 from PIL import Image;
-from math import ceil, log;
+from math import ceil, cos, log, pi, sqrt;
+from random import randint;
 import json;
 #import cairo;
 import os;
 import re;
+
+def equals3(a, b):
+    return a[0] == b[0] and a[1] == b[1] and a[2] == b[2];
+
+def sub3(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+def len3(v):
+    return sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2])
+
+
+def norm3(v):
+    l = sqrt(v[0]*v[0] + v[1]*v[1] + v[2]*v[2]);
+    assert(l!= 0);
+    return ( v[0]/l, v[1]/l, v[2]/l);
+
+def dot3(a, b):
+    return a[0]*b[0] + a[1]*b[1] + a[2]*b[2]
+
+def cross3(a, b):
+    return (a[1]*b[2] - a[2]*b[1],
+            a[2]*b[0] - a[0]*b[2],
+            a[0]*b[1] - a[1]*b[0])
+
+def createBase(points):
+
+    
+    for i in range(100):
+        p0 = points[ randint(0, len(points)-1)][:3]
+        p1 = points[ randint(0, len(points)-1)][:3]
+        p2 = points[ randint(0, len(points)-1)][:3]
+
+        dir1 = sub3(p2, p0);
+        dir2 = sub3(p1, p0);
+        
+        if len3(dir1) == 0 or len3(dir2) == 0:
+            continue;
+            
+        dir1 = norm3(dir1);
+        dir2 = norm3(dir2);
+            
+        if abs(dot3( dir1, dir2)) < 0.95:
+            #print (i, dot3(dir1, dir2))
+            return (p0, dir1, dir2);
+
+    for i in range(100):
+        p0 = points[ randint(0, len(points)-1)][:3]
+        p1 = points[ randint(0, len(points)-1)][:3]
+        p2 = points[ randint(0, len(points)-1)][:3]
+
+        dir1 = sub3(p2, p0);
+        dir2 = sub3(p1, p0);
+        
+        if len3(dir1) == 0 or len3(dir2) == 0:
+            continue;
+            
+        dir1 = norm3(dir1);
+        dir2 = norm3(dir2);
+            
+        if abs(dot3( dir1, dir2)) < 0.98:
+            return (p0, dir1, dir2);
+
+    raise Exception()
+
+def getArea(polygon):
+    area = 0;
+    n = len(polygon)
+    for i in range(n-1):
+        area += polygon[i][0] * polygon[i+1][1] - polygon[i][1] * polygon[i+1][0]
+    
+    return area/2;
+
+def getResolution(outline, size ):
+    
+    midLat = (min( x[0] for x in outline) + max( x[0] for x in outline)) / 2;
+    midLng = (min( x[1] for x in outline) + max( x[1] for x in outline)) / 2;
+    
+    earthCircumference = 2 * pi * (6378.1 * 1000);
+    lngScale = cos( midLat / 180 * pi);
+    
+    for vertex in outline:
+        dLat = midLat - vertex[0];
+        dLng = midLng - vertex[1];
+        
+        vertex[0] =  dLng / 360 * earthCircumference * lngScale;
+        vertex[1] =  dLat / 360 * earthCircumference;
+        
+        #print("##", len(vertex), vertex);
+    
+    try:
+        p0, dir0, dir1 = createBase(outline);
+    except:
+        return -1;
+        
+    
+    texCoords = [(x[3], x[4]) for x in outline]
+    coords = [ (  dot3(sub3(x, p0), dir0), dot3(sub3(x, p0), dir1)) for x in outline];
+    
+    numPixelsCovered = getArea(texCoords) * size[0] * size[1];
+    numSquareMeters = getArea(coords);
+
+    res = sqrt( abs(numPixelsCovered/numSquareMeters)) # [px/m]
+    return res;
+    #print("resolution:", res);
+    
 
 # parses a geometryTile json file, extracts the list of all referenced texture files,
 # and returns a list of those texture file names along with each texture's width and 
@@ -15,30 +121,49 @@ def getTextureSizes( geometryTileFileName):
     
     textures = [];
     numPixels = 0;
-    texSizes = [];
+    texSizes = {};
 
     for poly in data:
         texUri = poly["texUri"];
-        if texUri :
-            textures.append( texUri);
+        if texUri == None:
+            continue;
         
-    textures = list(set(textures)); # 'set' to make unique, 'list' to be able to sort
-    textures.sort();
-
-    for texUri in textures:
         im = Image.open(texUri);
         size = list(im.size);
+        res = getResolution( poly["outer"], size);
         
-        size[0] = min( size[0], 512);
-        size[1] = min( size[1], 512);
-        
-        if im.size[0] != size[0] or im.size[1] != size[1]:
-            pass
-            #print( "[WARN] reducing size of texture", texUri, "from", im.size, "to", size);
+        #if (texUri == "appearance/41/tex6122240.jpg"):
+        #    print("ÄÄ", res);
             
-        texSizes.append( (size, texUri) );
+        if res > 10:
+            fac = res / 10;
+            edgeFac = sqrt(fac);
+            #print("##", size)
+            size[0] = int(size[0]/edgeFac);
+            size[1] = int(size[1]/edgeFac);
+        
+        if size[0] < 1: size[0] = 1;
+        if size[1] < 1: size[1] = 1;
+        
+        if size[0] > MAX_ATLAS_WIDTH:  size[0] = MAX_ATLAS_WIDTH;
+        if size[1] > MAX_ATLAS_HEIGHT: size[1] = MAX_ATLAS_HEIGHT;
+        
+        
+            #print("#!", size)
+
+        #print(res, size, texUri);
+        #if texUri == "appearance/82/tex6725081.jpg":
+        #    exit(0);
+        
+        if not texUri in texSizes:
+            texSizes[texUri] = size;
+        else:
+            texSizes[texUri] = [max(size[0], texSizes[texUri][0]), 
+                                max(size[1], texSizes[texUri][1])];
+            
         numPixels += (size[0] * size[1])
     
+    texSizes = [(texSizes[x],x) for x in texSizes];
     return texSizes, numPixels;
 
 
@@ -115,6 +240,8 @@ def getResiduals( theBin, itemSize):
               "atlas"   :theBin["atlas"]}
 
     assert( getBinArea(resA0) + getBinArea(resA1) == residualArea);
+    #print ("A0", resA0);
+    #print ("A1", resA1);
     qA = getSubdivisionQuality( resA0, resA1);
     
     #candidate set 2:
@@ -133,6 +260,10 @@ def getResiduals( theBin, itemSize):
               "atlas"   :theBin["atlas"]}
               
     assert( getBinArea(resB0) + getBinArea(resB1) == residualArea);
+    
+    #print ("B0", resB0);
+    #print ("B1", resB1);
+    
     qB = getSubdivisionQuality( resB0, resB1);
 
     return (resA0, resA1) if qA < qB else (resB0, resB1);
@@ -155,6 +286,7 @@ def tryPack(item, bins):
                  "height":itemHeight,
                  "srcUri":   item[1],
                  "atlas": bins[i]["atlas"]}
+        #print("$$$", tile);
         bins[i] = bins[-1];
         bins.pop()
         if res0: bins.append(res0);
@@ -179,6 +311,10 @@ def getOptimalBinSize(texSizes):
     
     width = nextHigherPowerOfTwo(maxWidth)
     height= nextHigherPowerOfTwo(maxHeight)
+    if width > MAX_ATLAS_WIDTH or height > MAX_ATLAS_HEIGHT:
+        for x in texSizes:
+            print (x);
+            
     assert( width <= MAX_ATLAS_WIDTH and height <= MAX_ATLAS_HEIGHT)
 
     # try to make the new atlas bin big enough to fit the remaining tiles with as little
@@ -200,9 +336,7 @@ def getOptimalBinSize(texSizes):
             
     assert( width <= MAX_ATLAS_WIDTH and height <= MAX_ATLAS_HEIGHT)
     
-    #print(texelsLeft, maxWidth, maxHeight, width, height)
     return width, height
-    #exit(0);
     
 
 def binPack(texSizes, atlasBaseName):
@@ -239,7 +373,6 @@ def binPack(texSizes, atlasBaseName):
     return bins, tiles
 
 def createAtlas(tiles):
-    
     atlases = {tile["atlas"]["uri"]: tile["atlas"] for tile in tiles}
     
     texelsUsed = 0;
@@ -252,23 +385,26 @@ def createAtlas(tiles):
             srcImg = Image.open( tile["srcUri"])
             size = list(srcImg.size);
             
-            size[0] = min( size[0], 512);
-            size[1] = min( size[1], 512);
+            #size[0] = min( size[0], 512);
+            #size[1] = min( size[1], 512);
+
+            assert( srcImg.size[0] >= tile["width"] and srcImg.size[1] >= tile["height"])
             
-            if srcImg.size[0] != size[0] or srcImg.size[1] != size[1]:
+            
+            if srcImg.size[0] != tile["width"] or srcImg.size[1] != tile["height"]:
                 #print( "[WARN] reducing size of texture", tile["uri"], "from", srcImg.size, "to", size);
-                srcImg = srcImg.resize( size, Image.LANCZOS);
+                srcImg = srcImg.resize( [tile["width"], tile["height"]], Image.LANCZOS);
             
-            assert( srcImg.size[0] == tile["width"] and srcImg.size[1] == tile["height"])
+            #print( srcImg.size, size, tile);
             atlasImg.paste( srcImg, (tile["left"], tile["top"]))
 
-        atlasImg.save(atlas["uri"], quality=90, optimize=True); # subsampling=0
+        atlasImg.save(atlas["uri"], quality=85, optimize=True); # subsampling=0
 
         atlasImg = atlasImg.resize([ atlas["width"] >> 1, atlas["height"] >> 1]);
-        atlasImg.save(atlas["uri"]+".half", quality=90, optimize=True, format="JPEG");
+        atlasImg.save(atlas["uri"]+".half", quality=85, optimize=True, format="JPEG");
 
         atlasImg = atlasImg.resize([ atlas["width"] >> 2, atlas["height"] >> 2]);
-        atlasImg.save(atlas["uri"]+".quarter", quality=90, optimize=True, format="JPEG");
+        atlasImg.save(atlas["uri"]+".quarter", quality=85, optimize=True, format="JPEG");
         
         
     return texelsUsed;
@@ -387,14 +523,10 @@ for filename in files:
     x = m.group(1);
     y = m.group(2);
     
-    #print(x,y)
-    #exit(0);
     os.makedirs( OUTPUT_DIR + str(x), exist_ok = True);
-    #fileBase = filename[:-5]
-    #print(fileBase)
-    #continue;
         
     texSizes, numPixels = getTextureSizes( INPUT_DIR + filename)
+    #continue; #DEBUG 'continue'!
     texSizes.sort( key=lambda x: x[0][0]*x[0][1], reverse=True);
     bins, tiles = binPack(texSizes, OUTPUT_DIR + str(x) + "/" + str(y))
 

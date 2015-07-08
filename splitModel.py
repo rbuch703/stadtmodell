@@ -3,7 +3,7 @@
 from os import remove;
 import re;
 
-f = open('/mnt/StadtmodellBerlin3D/Mitte/Mitte.gml', 'rb')
+f = open('Mitte/Mitte.gml', 'rb')
 
 outputIdx = 0;
 
