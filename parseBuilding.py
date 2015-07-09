@@ -39,10 +39,12 @@ def parseTextures(bldg, filename):
             assert(len(sdm) == 1);
             child = sdm[0];
             assert(child.tag in ("ParameterizedTexture", "X3DMaterial"));
+            assert("id" in child.attrib);
             
             if child.tag == "X3DMaterial":
                 if theme == "rgbTexture":
-                    print("[WARN] untextured surface in textured model in building", filename);
+                    print(ESC_FG_YELLOW+"[WARN] untextured surface", child.attrib["id"],
+                          "in textured model in building", filename, ESC_RESET);
                 continue;
             
             assert( child.tag == "ParameterizedTexture");
@@ -56,7 +58,7 @@ def parseTextures(bldg, filename):
             
             #print(uri);
             if not os.path.isfile(uri):
-                print("[ERR ] texture file", uri, "for texture", texId, "in building", filename, "does not exist");
+                print(ESC_FG_RED+"[ERR ] texture file", uri, "for texture", texId, "in building", filename, "does not exist", ESC_RESET);
                 #exit(0);
                 continue;
             
@@ -68,7 +70,7 @@ def parseTextures(bldg, filename):
             if not dig in digests:
                 digests[dig] = uri
             elif uri != digests[dig]:
-                print("[WARN] identical textures", uri, "and", digests[dig]);
+                #print("[WARN] identical textures", uri, "and", digests[dig]);
                 uri = digests[dig]
 
 
@@ -144,29 +146,33 @@ def biasHeight(polygon, heightBias):
     for inner in polygon["inner"]:
         for i in range(len(inner["vertices"])):
             inner["vertices"][i][2] += heightBias
-    
+
 def getGeometry(bldg, filename):
     global proj;
     textures = {};
     
     polys = {};
     
-    for i in bldg.iter("Polygon"):
-        assert( "id" in i.attrib);
-        polyId = i.attrib["id"];
-        poly = {"inner":[]};
-        assert( len(i.findall("exterior")) == 1)
-        ext = i.find("exterior");
-        assert(len(ext.findall("LinearRing")) == 1);
-        poly["outer"] = parseRing( ext.find("LinearRing"))
-        #assert( i.find("interior") == None);
-        
-        for inner in i.findall("interior"):
-            assert(len(inner.findall("LinearRing")) == 1);
-            poly["inner"].append( parseRing(inner.find("LinearRing")))
+    # parse LOD3 geometry if present, otherwise fall back to LOD2
+    surfaceContainers = bldg.iter("lod3MultiSurface") if len(bldg.findall("lod3MultiSurface")) else bldg.iter("lod2MultiSurface");
+    
+    for lod2MultiSurface in surfaceContainers:
+        for i in lod2MultiSurface.iter("Polygon"):
+            assert( "id" in i.attrib);
+            polyId = i.attrib["id"];
+            poly = {"inner":[]};
+            assert( len(i.findall("exterior")) == 1)
+            ext = i.find("exterior");
+            assert(len(ext.findall("LinearRing")) == 1);
+            poly["outer"] = parseRing( ext.find("LinearRing"))
+            #assert( i.find("interior") == None);
             
-        assert( not polyId in polys)
-        polys[polyId] = poly;
+            for inner in i.findall("interior"):
+                assert(len(inner.findall("LinearRing")) == 1);
+                poly["inner"].append( parseRing(inner.find("LinearRing")))
+                
+            assert( not polyId in polys)
+            polys[polyId] = poly;
     
     if len(polys) == 0:
         return {};
@@ -187,8 +193,8 @@ def integrateRing( geomRing, texRing, filename ):
         # convert (lat, lng, z) and (s, t) ==> (lat, lng, z, s, t)
         return [ a[0] + a[1] for a in zip( geomRing["vertices"], texRing)];
 
-    print("[ERR ] mismatch of #vertices <-> #texCoords in surface", geomRing["id"], 
-          "in building", filename)
+    print(ESC_FG_RED+"[ERR ] mismatch of #vertices <-> #texCoords in surface", geomRing["id"], 
+          "in building", filename, ESC_RESET)
 
     return pseudoIntegrateRing(geomRing);
 
@@ -232,8 +238,8 @@ def integrate(geometry, textures, filename):
             targetRef = target["ref"]
             #print("texture", tex["id"], "has target", );
             if not targetRef in geometry:
-                print("[WARN] texture", tex["id"], "references non-existing target", targetRef,
-                      "in building", filename)
+                #print("[WARN] texture", tex["id"], "references non-existing target", targetRef,
+                #      "in building", filename)
                 continue
                 
             res.append(integratePolygon( tex["imageUri"], tex["id"], target, geometry[targetRef], filename));
@@ -268,24 +274,39 @@ TEXTURE_INPUT_DIR = "./"
 #        textureFiles.append( fileName)
 #    print(dir_);
 #exit(0);
-    
+
+ESC_FG_YELLOW = "\033[33m";
+ESC_FG_RED = "\033[31m";
+ESC_RESET =  "\033[0m";
+
 
 PATH = 'buildings/'
-i = 1;
-while os.path.isfile( PATH + 'bldg'+str(i)+".xml"):
-#for i in [9455]:
-    filename = PATH + 'bldg'+str(i);
 
+#for i in [1726]:
+buildings = {};
+i = 1;
+
+files = list([x for x in os.listdir(PATH)]);
+files.sort();
+
+for filename in files:
     if i % 1000 == 0:
         print( str(int(i/1000))+ "k buildings converted");
 
-    f = open(filename+".xml", 'rb')
+    f = open(PATH + filename, 'rb')
     s = str(f.read(), "utf-8")
     f.close()
    
     bldg = ET.fromstring(s).find("Building");
+    
     buildingId = bldg.attrib["id"]
-
+    if buildingId in buildings:
+        print(ESC_FG_YELLOW+ "[WARN] building", buildingId, "is present multiple times (", filename, "and", buildings[buildingId], "). Will ignore all but the first occurence.",ESC_RESET);
+        i+=1;
+        continue;
+    else:
+        buildings[buildingId] = filename;
+        
     try:
         textures = parseTextures(bldg, buildingId);
         geometry = getGeometry(bldg, buildingId);
@@ -295,7 +316,7 @@ while os.path.isfile( PATH + 'bldg'+str(i)+".xml"):
         raise;
    
     asJson = json.dumps(res);
-    fOut = open("geometry/bldg"+str(i)+".json", "wb");
+    fOut = open("geometry/" + filename[:-3]+"json", "wb");
     fOut.write( bytes(asJson, "utf-8"));
     fOut.close();
     

@@ -119,8 +119,8 @@ def getResolution(outline, size ):
 def getTextureSizes( geometryTileFileName):
     data = json.loads( open(geometryTileFileName).read())
     
-    textures = [];
-    numPixels = 0;
+    #textures = [];
+    #numPixels = 0;
     texSizes = {};
 
     for poly in data:
@@ -132,39 +132,37 @@ def getTextureSizes( geometryTileFileName):
         size = list(im.size);
         res = getResolution( poly["outer"], size);
         
-        #if (texUri == "appearance/41/tex6122240.jpg"):
-        #    print("ÄÄ", res);
-            
-        if res > 10:
-            fac = res / 10;
-            edgeFac = sqrt(fac);
-            #print("##", size)
-            size[0] = int(size[0]/edgeFac);
-            size[1] = int(size[1]/edgeFac);
-        
-        if size[0] < 1: size[0] = 1;
-        if size[1] < 1: size[1] = 1;
-        
-        if size[0] > MAX_ATLAS_WIDTH:  size[0] = MAX_ATLAS_WIDTH;
-        if size[1] > MAX_ATLAS_HEIGHT: size[1] = MAX_ATLAS_HEIGHT;
-        
-        
-            #print("#!", size)
-
-        #print(res, size, texUri);
-        #if texUri == "appearance/82/tex6725081.jpg":
-        #    exit(0);
-        
         if not texUri in texSizes:
-            texSizes[texUri] = size;
+            texSizes[texUri] = (size, res);
         else:
-            texSizes[texUri] = [max(size[0], texSizes[texUri][0]), 
-                                max(size[1], texSizes[texUri][1])];
+            oldSize, oldRes = texSizes[texUri];
+            assert( oldSize[0] == size[0] and oldSize[1] == size[1]);
+            texSizes[texUri] = (size, min( oldRes, res));
             
-        numPixels += (size[0] * size[1])
+    return [(x, texSizes[x][0], texSizes[x][1]) for x in texSizes];
+
+
+def reduceSize( uri, size, resolution, maxResolution):
+    if resolution > maxResolution:
+        fac = resolution / maxResolution;
+        edgeFac = sqrt(fac);
+        #print("##", size)
+        size[0] = int(size[0]/edgeFac);
+        size[1] = int(size[1]/edgeFac);
+        resolution = maxResolution;
     
-    texSizes = [(texSizes[x],x) for x in texSizes];
-    return texSizes, numPixels;
+    if size[0] < 1: size[0] = 1;
+    if size[1] < 1: size[1] = 1;
+    
+    if size[0] > MAX_ATLAS_WIDTH:  size[0] = MAX_ATLAS_WIDTH;
+    if size[1] > MAX_ATLAS_HEIGHT: size[1] = MAX_ATLAS_HEIGHT;
+    return (uri, size, resolution)
+    
+#def getReducedTextureSizes( textureSizes, maxResolution):
+#    return [ ]
+    
+
+
 
 
 # a measure of how useful the two residuals are: the more square-shaped both are,
@@ -273,7 +271,7 @@ def getResiduals( theBin, itemSize):
 # the tile created that holds 'item'. Otherwise, nothing is modified and 'None' is returned
 def tryPack(item, bins):
     #print("#", item)
-    itemSize = item[0];
+    itemSize = item[1];
     itemWidth, itemHeight = itemSize;
     for i in range(len(bins)):
         if bins[i]["width"] < itemWidth or bins[i]["height"] < itemHeight:
@@ -284,7 +282,7 @@ def tryPack(item, bins):
                  "left":  bins[i]["left"],
                  "width": itemWidth,
                  "height":itemHeight,
-                 "srcUri":   item[1],
+                 "srcUri":   item[0],
                  "atlas": bins[i]["atlas"]}
         #print("$$$", tile);
         bins[i] = bins[-1];
@@ -305,9 +303,9 @@ def nextHigherPowerOfTwo(a):
 
 def getOptimalBinSize(texSizes):
     global MAX_ATLAS_WIDTH, MAX_ATLAS_HEIGHT;
-    texelsLeft = sum([ x[0][0] * x[0][1] for x in texSizes])
-    maxWidth = max( [x[0][0] for x in texSizes])
-    maxHeight =max( [x[0][1] for x in texSizes])
+    texelsLeft = sum([ x[1][0] * x[1][1] for x in texSizes])
+    maxWidth = max( [x[1][0] for x in texSizes])
+    maxHeight =max( [x[1][1] for x in texSizes])
     
     width = nextHigherPowerOfTwo(maxWidth)
     height= nextHigherPowerOfTwo(maxHeight)
@@ -394,18 +392,14 @@ def createAtlas(tiles):
             if srcImg.size[0] != tile["width"] or srcImg.size[1] != tile["height"]:
                 #print( "[WARN] reducing size of texture", tile["uri"], "from", srcImg.size, "to", size);
                 srcImg = srcImg.resize( [tile["width"], tile["height"]], Image.LANCZOS);
+                #srcImg = srcImg.filter(ImageFilter.FIND_EDGES);
+                
             
             #print( srcImg.size, size, tile);
             atlasImg.paste( srcImg, (tile["left"], tile["top"]))
 
         atlasImg.save(atlas["uri"], quality=85, optimize=True); # subsampling=0
-
-        atlasImg = atlasImg.resize([ atlas["width"] >> 1, atlas["height"] >> 1]);
-        atlasImg.save(atlas["uri"]+".half", quality=85, optimize=True, format="JPEG");
-
-        atlasImg = atlasImg.resize([ atlas["width"] >> 2, atlas["height"] >> 2]);
-        atlasImg.save(atlas["uri"]+".quarter", quality=85, optimize=True, format="JPEG");
-        
+       
         
     return texelsUsed;
 
@@ -472,6 +466,16 @@ def createAtlasBasedGeometryTile( inputFileName, outputFileName, tiles):
                 t = max(min(1-pos[4], 1.0), 0.0);
                 pos[3] =  (tile["left"] + s * tile["width"]) / atlas["width"];
                 pos[4] =  (tile["top"] + t * tile["height"]) / atlas["height"];
+                
+                #round to necessary accuracy, to save space in JSON files:
+                # lat/lng need 7 decimal digits for guaranteed 1cm resolution
+                # height needs 2 decimal digits for guaranteed 1cm resolution
+                # texture coordinates need 4 digits for 1/2048th resolution
+                pos[0] = round(pos[0], 7);
+                pos[1] = round(pos[1], 7);
+                pos[2] = round(pos[2], 2);
+                pos[3] = round(pos[3], 4);
+                pos[4] = round(pos[4], 4);
                 #print( pos[3], pos[4]);
                 assert (pos[3] <= 1.0 and pos[4] <= 1.0)
 
@@ -482,6 +486,13 @@ def createAtlasBasedGeometryTile( inputFileName, outputFileName, tiles):
                     t = max(min(1-pos[4], 1.0), 0.0);
                     pos[3] =  (tile["left"] + s * tile["width"]) / atlas["width"];
                     pos[4] =  (tile["top"] + t * tile["height"]) / atlas["height"];
+
+                    pos[0] = round(pos[0], 7);
+                    pos[1] = round(pos[1], 7);
+                    pos[2] = round(pos[2], 2);
+                    pos[3] = round(pos[3], 4);
+                    pos[4] = round(pos[4], 4);
+
                     assert (pos[3] <= 1.0 and pos[4] <= 1.0)
             atlasGeometry.append(poly)
         geometry[atlasUri] = atlasGeometry;
@@ -498,6 +509,19 @@ def createAtlasBasedGeometryTile( inputFileName, outputFileName, tiles):
     geometry[None] = untexturedGeometry;        
         
     open(outputFileName, "wb").write( bytes(json.dumps(geometry), "utf8"))
+
+
+
+def createAtlasAndGeometry(geometryFileName, textureSizes, x, y, maxResolution, outputDir, suffix):
+    texSizes = [ reduceSize(*x, maxResolution=maxResolution) for x in textureSizes]
+    texSizes.sort( key=lambda x: x[1][0]*x[1][1], reverse=True);
+    
+    outputBaseName = outputDir + str(x) + "/" + str(y)+suffix;
+    bins, tiles = binPack(texSizes, outputBaseName)
+    #texelsUsed = 
+    createAtlas(tiles);
+
+    createAtlasBasedGeometryTile(geometryFileName, outputBaseName + ".json", tiles)
 
 
 ##### main #####
@@ -525,15 +549,10 @@ for filename in files:
     
     os.makedirs( OUTPUT_DIR + str(x), exist_ok = True);
         
-    texSizes, numPixels = getTextureSizes( INPUT_DIR + filename)
-    #continue; #DEBUG 'continue'!
-    texSizes.sort( key=lambda x: x[0][0]*x[0][1], reverse=True);
-    bins, tiles = binPack(texSizes, OUTPUT_DIR + str(x) + "/" + str(y))
-
-    texelsUsed = createAtlas(tiles);
-    #createAtlasPdf(tiles, bins);
-
-    createAtlasBasedGeometryTile(INPUT_DIR+filename, OUTPUT_DIR + str(x) + "/" + str(y) + ".json", tiles)
+    textureSizes = getTextureSizes( INPUT_DIR + filename)
+    createAtlasAndGeometry(INPUT_DIR+filename, textureSizes, x, y, 8, OUTPUT_DIR, "_full")
+    createAtlasAndGeometry(INPUT_DIR+filename, textureSizes, x, y, 4, OUTPUT_DIR, "_half")
+    createAtlasAndGeometry(INPUT_DIR+filename, textureSizes, x, y, 2, OUTPUT_DIR, "_quarter")
     #print("Texels used: ", texelsUsed/1000, "k")
 
 
